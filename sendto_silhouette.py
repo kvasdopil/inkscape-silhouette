@@ -8,7 +8,7 @@
 __version__ = "1.29"     # Keep in sync with sendto_silhouette.inx ca line 179
 __author__ = "Juergen Weigert <juergen@fabmail.org> and contributors"
 
-import sys, os, time, math, operator
+import sys, os, time, math, operator, subprocess, contextlib
 
 # we sys.path.append() the directory where this script lives.
 sys.path.append(os.path.dirname(os.path.abspath(sys.argv[0])))
@@ -409,6 +409,35 @@ class SendtoSilhouette(EffectExtension):
             "Cannot determine whether media is loaded (status=%s). Job aborted."
             % state
         )
+
+
+    @contextlib.contextmanager
+    def _prevent_system_sleep(self):
+        """Hold a macOS system-sleep assertion for the duration of a real
+        cutting job.
+
+        A multi-minute cut with no keyboard/mouse activity is exactly what
+        macOS's idle-sleep policy targets. If the Mac sleeps mid-job, the
+        BLE connection to the cutter drops (confirmed on real hardware:
+        bleak.exc.BleakError: disconnected mid-write) and the whole job
+        fails. `caffeinate -s` prevents system sleep (not just display
+        sleep) for as long as it keeps running; harmless if something else
+        is already preventing sleep, and this only ever runs on macOS.
+        """
+        if sys.platform.lower() != "darwin":
+            yield
+            return
+        proc = None
+        try:
+            proc = subprocess.Popen(["caffeinate", "-s"])
+        except Exception as e:
+            self.report("Could not start caffeinate to prevent sleep during "
+                        "the job: %s" % e, 'log')
+        try:
+            yield
+        finally:
+            if proc is not None:
+                proc.terminate()
 
 
     def plotPath(self, path: Path):
@@ -890,22 +919,23 @@ class SendtoSilhouette(EffectExtension):
 
         if self.options.autocrop:
             # this takes much longer, if we have a complext drawing
-            bbox = dev.plot(pathlist=cut,
-                    mediawidth=convert_unit(self.svg.viewport_width, "mm"),
-                    mediaheight=convert_unit(self.svg.viewport_height, "mm"),
-                    margintop=0,
-                    marginleft=0,
-                    bboxonly=None,         # only return the bbox, do not draw it.
-                    endposition="start",
-                    regmark=self.options.regmark,
-                    regsearch=self.options.regsearch,
-                    quadregmarks=self.options.quadregmarks,
-                    regwidth=self.reg_width,
-                    reglength=self.reg_length,
-                    regoriginx=self.reg_origin_X,
-                    regoriginy=self.reg_origin_Y,
-                    skip_init=self.options.skip_init,
-                    skip_reset=self.options.skip_reset)
+            with self._prevent_system_sleep():
+                bbox = dev.plot(pathlist=cut,
+                        mediawidth=convert_unit(self.svg.viewport_width, "mm"),
+                        mediaheight=convert_unit(self.svg.viewport_height, "mm"),
+                        margintop=0,
+                        marginleft=0,
+                        bboxonly=None,         # only return the bbox, do not draw it.
+                        endposition="start",
+                        regmark=self.options.regmark,
+                        regsearch=self.options.regsearch,
+                        quadregmarks=self.options.quadregmarks,
+                        regwidth=self.reg_width,
+                        reglength=self.reg_length,
+                        regoriginx=self.reg_origin_X,
+                        regoriginy=self.reg_origin_Y,
+                        skip_init=self.options.skip_init,
+                        skip_reset=self.options.skip_reset)
 
             if len(bbox["bbox"].keys()):
                     self.report(
@@ -915,22 +945,23 @@ class SendtoSilhouette(EffectExtension):
                     self.options.x_off -= bbox["bbox"]["llx"]*bbox["unit"]
                     self.options.y_off -= bbox["bbox"]["ury"]*bbox["unit"]
 
-        bbox = dev.plot(pathlist=cut,
-            mediawidth=convert_unit(self.svg.viewport_width, "mm"),
-            mediaheight=convert_unit(self.svg.viewport_height, "mm"),
-            offset=(self.options.x_off, self.options.y_off),
-            bboxonly=self.options.bboxonly,
-            endposition=self.options.endposition,
-            end_paper_offset=self.options.end_offset,
-            regmark=self.options.regmark,
-            regsearch=self.options.regsearch,
-            quadregmarks=self.options.quadregmarks,
-            regwidth=self.reg_width,
-            reglength=self.reg_length,
-            regoriginx=self.reg_origin_X,
-            regoriginy=self.reg_origin_Y,
-            skip_init=self.options.skip_init,
-            skip_reset=self.options.skip_reset)
+        with self._prevent_system_sleep():
+            bbox = dev.plot(pathlist=cut,
+                mediawidth=convert_unit(self.svg.viewport_width, "mm"),
+                mediaheight=convert_unit(self.svg.viewport_height, "mm"),
+                offset=(self.options.x_off, self.options.y_off),
+                bboxonly=self.options.bboxonly,
+                endposition=self.options.endposition,
+                end_paper_offset=self.options.end_offset,
+                regmark=self.options.regmark,
+                regsearch=self.options.regsearch,
+                quadregmarks=self.options.quadregmarks,
+                regwidth=self.reg_width,
+                reglength=self.reg_length,
+                regoriginx=self.reg_origin_X,
+                regoriginy=self.reg_origin_Y,
+                skip_init=self.options.skip_init,
+                skip_reset=self.options.skip_reset)
         if len(bbox["bbox"].keys()) == 0:
             self.report("empty page?", 'error')
         else:
